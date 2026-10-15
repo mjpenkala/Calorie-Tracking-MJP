@@ -1,0 +1,231 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="FuelLog">
+<title>FuelLog</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#14181f;--mu:#6b7280;--ac:#16a34a;--bd:#e5e7eb;--p:#3b82f6;--c:#f59e0b;--f:#ef4444;--w:#0ea5e9}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1116;--card:#181c23;--tx:#eef1f5;--mu:#9aa3af;--bd:#2a303a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px -apple-system,system-ui,sans-serif;padding:env(safe-area-inset-top) 0 calc(70px + env(safe-area-inset-bottom))}
+#app{max-width:520px;margin:0 auto;padding:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
+h2{margin:0 0 8px;font-size:17px}h3{margin:0 0 6px;font-size:14px;color:var(--mu);font-weight:600}
+label{display:block;font-size:13px;color:var(--mu);margin:10px 0 3px}
+input,select,textarea{width:100%;font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:10px;padding:10px}
+button{font:inherit;border:0;border-radius:10px;padding:10px 14px;background:var(--ac);color:#fff;font-weight:600}
+button.s{background:var(--bd);color:var(--tx)}button.d{background:none;color:var(--f);padding:4px 8px}
+.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.bar{height:8px;background:var(--bd);border-radius:6px;overflow:hidden;margin:3px 0 9px}.bar i{display:block;height:100%}
+.bl{display:flex;justify-content:space-between;font-size:13px}.mu{color:var(--mu);font-size:13px}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--bd);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;color:var(--mu);border-radius:0;padding:12px 0;font-size:13px}nav button.on{color:var(--ac)}
+.it{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--bd)}
+#cam{position:fixed;inset:0;background:#000;z-index:9;display:none;flex-direction:column}#cam video{flex:1;width:100%;object-fit:cover}#cam button{margin:16px}
+.big{font-size:26px;font-weight:700}
+</style></head><body><div id="app"></div><nav id="nav"></nav>
+<div id="cam"><video id="vid" playsinline muted></video><button class="s" onclick="stopCam()">Cancel</button></div>
+<script>
+const $=s=>document.querySelector(s),esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let S=null;try{S=JSON.parse(localStorage.getItem('fl')||'null')}catch(e){}
+S=S||{profile:null,goals:null,log:{},water:{},weight:{},ai:{prov:'gemini',key:'',model:'gemini-2.5-flash'}};
+const save=()=>{try{localStorage.setItem('fl',JSON.stringify(S))}catch(e){}};
+const dk=d=>{d=d||new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
+const days=n=>Array.from({length:n},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(n-1-i));return dk(d)});
+const sum=(a,k)=>a.reduce((s,x)=>s+(+x[k]||0),0),r=Math.round;
+const tot=d=>{const l=S.log[d]||[];return{k:sum(l,'k'),p:sum(l,'p'),c:sum(l,'c'),f:sum(l,'f')}};
+const imp=()=>S.profile&&S.profile.u==='i';
+const fw=kg=>imp()?(kg*2.2046).toFixed(1)+' lb':kg.toFixed(1)+' kg';
+const fm=ml=>imp()?r(ml/29.57)+' oz':r(ml)+' ml';
+let tab='today',range=7,pend=null,setup=!S.goals;
+
+/* ---------- goal calculation ---------- */
+function calc(p){
+ const bmr=10*p.kg+6.25*p.cm-5*p.age+(p.sex==='m'?5:-161),tdee=bmr*p.act;
+ const k=Math.max(1200,r(tdee+{lose:-500,maintain:0,gain:300}[p.goal]));
+ const pr=r(p.kg*{lose:2.2,maintain:1.8,gain:2}[p.goal]),f=r(k*.25/9),c=Math.max(0,r((k-pr*4-f*9)/4));
+ // water: 35 ml/kg base, +500 ml with creatine, +300 ml for very active
+ const w=r((p.kg*35+(p.cr?500:0)+(p.act>=1.55?300:0))/50)*50;
+ return{k,p:pr,c,f,w,bmr:r(bmr),tdee:r(tdee)};
+}
+function readProfile(){
+ const u=$('#u').value,i=u==='i';
+ return{u,sex:$('#sex').value,age:+$('#age').value,cm:i?+$('#ht').value*2.54:+$('#ht').value,kg:i?+$('#wt').value/2.2046:+$('#wt').value,act:+$('#act').value,goal:$('#goal').value,cr:$('#cr').checked};
+}
+function setupView(){
+ const p=S.profile||{u:'m',sex:'m',age:30,cm:175,kg:75,act:1.375,goal:'maintain',cr:false},i=p.u==='i';
+ const o=(v,t,sel)=>`<option value="${v}" ${sel==v?'selected':''}>${t}</option>`;
+ return`<div class=card><h2>${S.goals?'Update your goals':'Welcome! Set up your goals'}</h2>
+ <label>Units</label><select id=u onchange="unitChg()">${o('m','Metric (kg, cm, ml)',p.u)}${o('i','Imperial (lb, in, oz)',p.u)}</select>
+ <div class=g2><div><label>Sex</label><select id=sex>${o('m','Male',p.sex)}${o('f','Female',p.sex)}</select></div>
+ <div><label>Age</label><input id=age type=number value="${p.age}"></div>
+ <div><label id=hl>Height (${i?'in':'cm'})</label><input id=ht type=number step=any value="${i?(p.cm/2.54).toFixed(1):r(p.cm)}"></div>
+ <div><label id=wl>Weight (${i?'lb':'kg'})</label><input id=wt type=number step=any value="${i?(p.kg*2.2046).toFixed(1):p.kg.toFixed(1)}"></div></div>
+ <label>Activity level</label><select id=act>${o(1.2,'Sedentary (desk job, little exercise)',p.act)}${o(1.375,'Light (1-3 workouts/week)',p.act)}${o(1.55,'Moderate (3-5 workouts/week)',p.act)}${o(1.725,'Very active (6-7 workouts/week)',p.act)}</select>
+ <label>Goal</label><select id=goal>${o('lose','Lose fat (about -500 kcal/day)',p.goal)}${o('maintain','Maintain weight',p.goal)}${o('gain','Build muscle (about +300 kcal/day)',p.goal)}</select>
+ <label style="display:flex;gap:8px;align-items:center;color:var(--tx)"><input id=cr type=checkbox style="width:auto" ${p.cr?'checked':''}> I take creatine</label>
+ <br><button style="width:100%" onclick="preview()">Calculate my targets</button></div><div id=pv></div>`;
+}
+function unitChg(){const i=$('#u').value==='i';$('#hl').textContent=`Height (${i?'in':'cm'})`;$('#wl').textContent=`Weight (${i?'lb':'kg'})`;}
+function preview(){
+ const p=readProfile();if(!(p.age>0&&p.cm>0&&p.kg>0))return alert('Please fill in age, height and weight.');
+ const c=calc(p),i=p.u==='i',wv=i?r(c.w/29.57):c.w;
+ $('#pv').innerHTML=`<div class=card><h2>Your daily targets</h2>
+ <p class=mu>Maintenance ≈ ${c.tdee} kcal. Protein ${(c.p/p.kg).toFixed(1)} g/kg, fat 25% of calories, carbs fill the rest. Water = 35 ml/kg${p.cr?' + 500 ml for creatine':''}${p.act>=1.55?' + 300 ml for training':''}. Edit any number you like.</p>
+ <div class=g2><div><label>Calories</label><input id=gk type=number value=${c.k}></div><div><label>Protein (g)</label><input id=gp type=number value=${c.p}></div>
+ <div><label>Carbs (g)</label><input id=gc type=number value=${c.c}></div><div><label>Fat (g)</label><input id=gf type=number value=${c.f}></div></div>
+ <label>Water (${i?'oz':'ml'})</label><input id=gw type=number value=${wv}>
+ <p class=mu>These are general estimates, not medical advice. If you have a kidney condition or other health issue, check water and protein targets with your doctor.</p>
+ <button style="width:100%" onclick="saveGoals()">Save and start</button></div>`;
+ $('#pv').scrollIntoView({behavior:'smooth'});
+}
+function saveGoals(){
+ const p=readProfile(),i=p.u==='i';S.profile=p;
+ S.goals={k:+$('#gk').value,p:+$('#gp').value,c:+$('#gc').value,f:+$('#gf').value,w:i?r(+$('#gw').value*29.57):+$('#gw').value};
+ if(!S.weight[dk()])S.weight[dk()]=p.kg;
+ setup=false;tab='today';save();render();
+}
+
+/* ---------- views ---------- */
+const bar=(l,v,m,c,u)=>`<div class=bl><span>${l}</span><span>${r(v)} / ${r(m)} ${u}</span></div><div class=bar><i style="width:${Math.min(100,v/m*100||0)}%;background:${c}"></i></div>`;
+function todayView(){
+ const d=dk(),t=tot(d),g=S.goals,w=S.water[d]||0,C=2*Math.PI*52,pc=Math.min(1,t.k/g.k),over=t.k>g.k,i=imp();
+ const q=i?[[237,'8 oz'],[473,'16 oz']]:[[250,'250 ml'],[500,'500 ml']];
+ const items=(S.log[d]||[]).map(x=>`<div class=it><div>${esc(x.n)}<div class=mu>P ${r(x.p)} · C ${r(x.c)} · F ${r(x.f)}</div></div><div>${r(x.k)} kcal <button class=d onclick="del(${x.id})">✕</button></div></div>`).join('')||'<p class=mu>Nothing logged yet. Tap Add to log a meal.</p>';
+ return`<div class=card style="text-align:center"><svg width=150 height=150 viewBox="0 0 120 120"><circle cx=60 cy=60 r=52 fill=none stroke="var(--bd)" stroke-width=10 /><circle cx=60 cy=60 r=52 fill=none stroke="${over?'var(--f)':'var(--ac)'}" stroke-width=10 stroke-linecap=round stroke-dasharray="${C*pc} ${C}" transform="rotate(-90 60 60)"/><text x=60 y=60 text-anchor=middle font-size=22 font-weight=700 fill="var(--tx)">${Math.abs(r(g.k-t.k))}</text><text x=60 y=75 text-anchor=middle font-size=9 fill="var(--mu)">${over?'kcal over':'kcal left'}</text></svg>
+ <div class=mu>${r(t.k)} eaten · goal ${g.k}</div></div>
+ <div class=card><h3>MACROS</h3>${bar('Protein',t.p,g.p,'var(--p)','g')}${bar('Carbs',t.c,g.c,'var(--c)','g')}${bar('Fat',t.f,g.f,'var(--f)','g')}</div>
+ <div class=card><h3>WATER</h3><div class=bl><span class=big>${fm(w)}</span><span class=mu>goal ${fm(g.w)}</span></div><div class=bar><i style="width:${Math.min(100,w/g.w*100)}%;background:var(--w)"></i></div>
+ <div class=row>${q.map(a=>`<button onclick="addW(${a[0]})">+ ${a[1]}</button>`).join('')}<button class=s onclick="addW(0)">Custom</button><button class=s onclick="addW(-1)">Undo</button></div></div>
+ <div class=card><h2>Today's meals</h2>${items}</div>`;
+}
+function addW(n){const d=dk();
+ if(n===0){const v=parseFloat(prompt(`Amount in ${imp()?'oz':'ml'}?`));if(!(v>0))return;n=imp()?r(v*29.57):v}
+ if(n===-1){S.water[d]=Math.max(0,(S.water[d]||0)-(imp()?237:250))}else S.water[d]=(S.water[d]||0)+n;save();render()}
+function del(id){const d=dk();S.log[d]=(S.log[d]||[]).filter(x=>x.id!==id);save();render()}
+
+function addView(){
+ const a=S.ai;
+ return`<div class=card><h2>Log food</h2><div class=g2>
+ <button onclick="startCam()">📷 Scan barcode</button>
+ <button onclick="$('#ph').click()">🍽 Photo of food</button></div>
+ <input id=ph type=file accept="image/*" hidden onchange="photo(this)">
+ <label>Or type a barcode number</label><div class=row><input id=bc inputmode=numeric placeholder="e.g. 5000159407236"><button class=s style="flex:0" onclick="lookup($('#bc').value)">Go</button></div>
+ <label>Or describe what you ate</label><textarea id=ds rows=2 placeholder="two scrambled eggs, 2 slices of toast with butter"></textarea>
+ <br><div class=row><button onclick="describe()">Analyze</button><button class=s onclick="pend={n:'',k:0,p:0,c:0,f:0};showPend()">Manual entry</button></div>
+ <p class=mu id=msg>${a.key?'':'Photo and describe need a free AI key: add it in Settings. Barcodes and manual entry work without one.'}</p></div><div id=res></div>`;
+}
+function showPend(){
+ const x=pend;$('#res').innerHTML=`<div class=card><h2>Review & save</h2><label>Name</label><input id=n value="${esc(x.n)}">
+ ${x.per?`<label>Amount (g or ml)</label><input id=gr type=number value=${x.gr} oninput="per()">`:''}
+ <div class=g2><div><label>Calories</label><input id=k type=number value=${r(x.k)}></div><div><label>Protein (g)</label><input id=p type=number step=any value=${+x.p.toFixed(1)}></div>
+ <div><label>Carbs (g)</label><input id=c type=number step=any value=${+x.c.toFixed(1)}></div><div><label>Fat (g)</label><input id=f type=number step=any value=${+x.f.toFixed(1)}></div></div>
+ <p class=mu>${x.note||''}</p><button style="width:100%" onclick="saveFood()">Add to today</button></div>`;
+ $('#res').scrollIntoView({behavior:'smooth'});
+}
+function per(){const g=+$('#gr').value/100,x=pend.per;$('#k').value=r(x.k*g);$('#p').value=+(x.p*g).toFixed(1);$('#c').value=+(x.c*g).toFixed(1);$('#f').value=+(x.f*g).toFixed(1)}
+function saveFood(){const d=dk();(S.log[d]=S.log[d]||[]).push({id:Date.now(),n:$('#n').value||'Food',k:+$('#k').value||0,p:+$('#p').value||0,c:+$('#c').value||0,f:+$('#f').value||0});pend=null;tab='today';save();render()}
+const msg=t=>{const m=$('#msg');if(m)m.textContent=t};
+
+/* ---------- barcode ---------- */
+let stream=null,scanning=false;
+async function startCam(){
+ try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});}catch(e){return msg('Camera not available: '+e.message)}
+ const v=$('#vid');v.srcObject=stream;await v.play();$('#cam').style.display='flex';scanning=true;
+ if('BarcodeDetector' in window){const bd=new BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e']});
+  (async function loop(){if(!scanning)return;try{const b=await bd.detect(v);if(b.length){const c=b[0].rawValue;stopCam();return lookup(c)}}catch(e){}setTimeout(loop,250)})();
+ }else{
+  try{if(!window.ZXing)await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';s.onload=ok;s.onerror=no;document.head.appendChild(s)});
+   const rd=new ZXing.BrowserMultiFormatReader();
+   (async function loop(){if(!scanning)return;try{const res=await rd.decodeOnceFromVideoElement(v);stopCam();lookup(res.getText())}catch(e){if(scanning)setTimeout(loop,200)}})();
+  }catch(e){stopCam();msg('Scanner library failed to load. Type the barcode number instead.')}
+ }
+}
+function stopCam(){scanning=false;if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('#cam').style.display='none'}
+async function lookup(code){
+ code=String(code||'').trim();if(!code)return;msg('Looking up '+code+'…');
+ try{const j=await(await fetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,brands,nutriments,serving_quantity`)).json();
+  if(j.status!==1)return msg('Product not found in Open Food Facts. Try a photo or manual entry.');
+  const n=j.product.nutriments||{},per={k:n['energy-kcal_100g']||0,p:n.proteins_100g||0,c:n.carbohydrates_100g||0,f:n.fat_100g||0},gr=+j.product.serving_quantity||100;
+  pend={n:[j.product.brands,j.product.product_name].filter(Boolean).join(' '),per,gr,k:per.k*gr/100,p:per.p*gr/100,c:per.c*gr/100,f:per.f*gr/100,note:'Values are per 100 g from Open Food Facts (crowdsourced). Adjust the amount.'};
+  msg('');showPend();
+ }catch(e){msg('Lookup failed: '+e.message)}
+}
+
+/* ---------- AI (photo / text) ---------- */
+function resize(file){return new Promise((ok,no)=>{const im=new Image();im.onload=()=>{const m=1024,s=Math.min(1,m/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*s;c.height=im.height*s;c.getContext('2d').drawImage(im,0,0,c.width,c.height);ok(c.toDataURL('image/jpeg',.8))};im.onerror=no;im.src=URL.createObjectURL(file)})}
+async function photo(inp){const f=inp.files[0];inp.value='';if(!f)return;try{ask(await resize(f),$('#ds').value)}catch(e){msg('Could not read image.')}}
+function describe(){const t=$('#ds').value.trim();if(!t)return msg('Type what you ate first.');ask(null,t)}
+async function ask(img,text){
+ const a=S.ai;if(!a.key)return msg('Add a free AI key in Settings first.');
+ msg('Analyzing…');
+ const prompt='Estimate the nutrition of this meal for the whole portion shown or described. '+(text?'Description: '+text+'. ':'')+'Reply ONLY with JSON: {"items":[{"name":string,"kcal":number,"p":number,"c":number,"f":number}]} where p,c,f are grams of protein, carbs, fat.';
+ try{let out;
+  if(a.prov==='gemini'){
+   const parts=[{text:prompt}];if(img)parts.push({inline_data:{mime_type:'image/jpeg',data:img.split(',')[1]}});
+   const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${a.model}:generateContent?key=${encodeURIComponent(a.key)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts}],generationConfig:{responseMimeType:'application/json'}})});
+   const j=await res.json();if(!res.ok)throw new Error(j.error&&j.error.message||res.status);out=j.candidates[0].content.parts[0].text;
+  }else{
+   const content=[{type:'text',text:prompt}];if(img)content.push({type:'image_url',image_url:{url:img}});
+   const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+a.key},body:JSON.stringify({model:a.model,messages:[{role:'user',content}],response_format:{type:'json_object'}})});
+   const j=await res.json();if(!res.ok)throw new Error(j.error&&j.error.message||res.status);out=j.choices[0].message.content;
+  }
+  const it=JSON.parse(out.replace(/```json|```/g,'').trim()).items;
+  pend={n:it.map(x=>x.name).join(', '),k:sum(it,'kcal'),p:sum(it,'p'),c:sum(it,'c'),f:sum(it,'f'),note:'AI estimate. Portion size is the least accurate part, so adjust if needed.'};
+  msg('');showPend();
+ }catch(e){msg('AI error: '+e.message+(/quota|limit|429/i.test(e.message)?' (Rate limit hit. Wait a minute, or switch provider in Settings.)':''))}
+}
+
+/* ---------- charts ---------- */
+function bars(vals,labels,goal,color){
+ const W=320,H=120,mx=Math.max(goal||0,...vals,1)*1.1,bw=W/vals.length;
+ let s=`<svg viewBox="0 0 ${W} ${H+16}" width=100%>`;
+ vals.forEach((v,i)=>{const h=v/mx*H;s+=`<rect x=${i*bw+bw*.15} y=${H-h} width=${bw*.7} height=${h} rx=2 fill="${color}"/>`;
+  if(vals.length<=7||i%5===0)s+=`<text x=${i*bw+bw/2} y=${H+12} font-size=8 text-anchor=middle fill="var(--mu)">${labels[i]}</text>`});
+ if(goal)s+=`<line x1=0 x2=${W} y1=${H-goal/mx*H} y2=${H-goal/mx*H} stroke="var(--tx)" stroke-dasharray="4 3" opacity=.5 />`;
+ return s+'</svg>';
+}
+function line(pts){
+ if(pts.length<2)return'<p class=mu>Log your weight on at least two days to see a trend.</p>';
+ const W=320,H=110,ys=pts.map(p=>p[1]),lo=Math.min(...ys)-1,hi=Math.max(...ys)+1,n=pts.length;
+ const xy=pts.map((p,i)=>[i/(n-1)*(W-20)+10,H-(p[1]-lo)/(hi-lo)*H+5]);
+ return`<svg viewBox="0 0 ${W} ${H+20}" width=100%><polyline fill=none stroke="var(--ac)" stroke-width=2 points="${xy.map(p=>p.join(',')).join(' ')}"/>${xy.map(p=>`<circle cx=${p[0]} cy=${p[1]} r=2.5 fill="var(--ac)"/>`).join('')}<text x=10 y=${H+16} font-size=9 fill="var(--mu)">${fw(ys[0])}</text><text x=${W-10} y=${H+16} font-size=9 text-anchor=end fill="var(--mu)">${fw(ys[n-1])}</text></svg>`;
+}
+function progView(){
+ const ds=days(range),lb=ds.map(d=>d.slice(5).replace('-','/')),i=imp(),g=S.goals;
+ const kc=ds.map(d=>tot(d).k),logged=ds.filter(d=>(S.log[d]||[]).length),av=a=>a.length?r(a.reduce((x,y)=>x+y,0)/a.length):0;
+ let streak=0;for(const d of days(60).reverse()){if((S.log[d]||[]).length)streak++;else if(d!==dk())break}
+ const wv=ds.map(d=>S.water[d]||0),wp=Object.keys(S.weight).sort().filter(d=>d>=ds[0]).map(d=>[d,S.weight[d]]);
+ const hit=ds.filter(d=>(S.water[d]||0)>=g.w).length;
+ return`<div class=row style="margin-bottom:12px"><button class="${range==7?'':'s'}" onclick="range=7;render()">7 days</button><button class="${range==30?'':'s'}" onclick="range=30;render()">30 days</button></div>
+ <div class=card><div class=g2><div><div class=big>${av(logged.map(d=>tot(d).k))}</div><div class=mu>avg kcal (logged days)</div></div><div><div class=big>🔥 ${streak}</div><div class=mu>day logging streak</div></div>
+ <div><div class=big>${av(logged.map(d=>tot(d).p))} g</div><div class=mu>avg protein</div></div><div><div class=big>${hit}/${range}</div><div class=mu>water goals hit</div></div></div></div>
+ <div class=card><h3>CALORIES (dashed = goal)</h3>${bars(kc,lb,g.k,'var(--ac)')}</div>
+ <div class=card><h3>WATER (${i?'oz':'ml'}, dashed = goal)</h3>${bars(wv.map(v=>i?v/29.57:v),lb,i?g.w/29.57:g.w,'var(--w)')}</div>
+ <div class=card><h3>WEIGHT</h3>${line(wp)}<div class=row style="margin-top:8px"><input id=nw type=number step=any placeholder="Today's weight (${i?'lb':'kg'})"><button style="flex:0" onclick="logW()">Log</button></div></div>`;
+}
+function logW(){const v=parseFloat($('#nw').value);if(!(v>0))return;S.weight[dk()]=imp()?v/2.2046:v;save();render()}
+
+/* ---------- settings ---------- */
+function setView(){
+ const a=S.ai;return`<div class=card><h2>Targets</h2><p class=mu>${S.goals.k} kcal · P ${S.goals.p} g · C ${S.goals.c} g · F ${S.goals.f} g · Water ${fm(S.goals.w)}</p><button onclick="setup=true;render()">Recalculate goals</button></div>
+ <div class=card><h2>AI for photos & descriptions</h2><label>Provider</label><select id=pv2 onchange="provChg()"><option value=gemini ${a.prov=='gemini'?'selected':''}>Google Gemini (free tier)</option><option value=groq ${a.prov=='groq'?'selected':''}>Groq (free tier)</option></select>
+ <label>API key (stored only on this device)</label><input id=key type=password value="${esc(a.key)}"><label>Model</label><input id=mod value="${esc(a.model)}">
+ <p class=mu>Gemini keys: aistudio.google.com. Groq keys: console.groq.com. For Gemini use a Flash or Flash-Lite model. For Groq use a vision model such as meta-llama/llama-4-scout-17b-16e-instruct.</p><button onclick="saveAI()">Save</button></div>
+ <div class=card><h2>Data</h2><div class=g2><button class=s onclick="exp()">Export backup</button><button class=s onclick="$('#imp').click()">Import backup</button></div><input id=imp type=file accept=".json" hidden onchange="imp2(this)">
+ <p class=mu>Use export/import to move your history between devices.</p><button class=d onclick="if(confirm('Delete ALL data?')){localStorage.removeItem('fl');location.reload()}">Erase all data</button></div>`;
+}
+function provChg(){const g=$('#pv2').value==='gemini';$('#mod').value=g?'gemini-2.5-flash':'meta-llama/llama-4-scout-17b-16e-instruct'}
+function saveAI(){S.ai={prov:$('#pv2').value,key:$('#key').value.trim(),model:$('#mod').value.trim()};save();alert('Saved')}
+function exp(){const b=new Blob([JSON.stringify(S)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='fuellog-backup-'+dk()+'.json';a.click()}
+function imp2(inp){const f=inp.files[0];if(!f)return;f.text().then(t=>{try{const d=JSON.parse(t);if(!d.goals)throw 0;S=d;save();location.reload()}catch(e){alert('Not a valid backup file.')}})}
+
+/* ---------- shell ---------- */
+function render(){
+ const nav=$('#nav');
+ if(setup){nav.style.display='none';$('#app').innerHTML=setupView()+(S.goals?'<button class=s style="width:100%" onclick="setup=false;render()">Cancel</button>':'');scrollTo(0,0);return}
+ nav.style.display='flex';
+ nav.innerHTML=[['today','🏠','Today'],['add','➕','Add'],['prog','📈','Progress'],['set','⚙️','Settings']].map(t=>`<button class="${tab==t[0]?'on':''}" onclick="tab='${t[0]}';pend=null;render()">${t[1]}<br>${t[2]}</button>`).join('');
+ $('#app').innerHTML={today:todayView,add:addView,prog:progView,set:setView}[tab]();
+ if(tab==='add'&&pend)showPend();
+}
+render();
+</script></body></html>
